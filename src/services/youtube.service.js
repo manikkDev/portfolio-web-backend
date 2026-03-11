@@ -1,6 +1,6 @@
-import { supabaseAdmin } from '../config/supabase.js';
 import { YOUTUBE } from '../config/constants.js';
 import env from '../config/env.js';
+import { supabaseAdmin } from '../config/supabase.js';
 import logger from '../utils/logger.js';
 
 const YT_API_BASE = 'https://www.googleapis.com/youtube/v3';
