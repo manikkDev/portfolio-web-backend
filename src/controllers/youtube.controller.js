@@ -3,12 +3,13 @@ import { ApiError } from '../utils/ApiError.js';
 
 export async function getVideos(req, res, next) {
   try {
-    const videos = await youtubeService.getVideos();
+    // { videos: [...], shorts: [...] }
+    const data = await youtubeService.getVideos();
 
     res.json({
       success: true,
-      data: videos,
-      meta: { count: videos.length },
+      data,
+      meta: { videos: data.videos.length, shorts: data.shorts.length },
     });
   } catch (err) {
     next(err instanceof ApiError ? err : ApiError.internal(err.message));

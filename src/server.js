@@ -8,6 +8,10 @@ import logger from './utils/logger.js';
 
 const app = express();
 
+// Hosts like Render and Vercel sit behind one proxy; without this every visitor
+// shares the proxy's IP and the rate limiters throttle everyone together.
+app.set('trust proxy', 1);
+
 // ─── Global Middleware ───────────────────────────────────────
 app.use(cors({
   origin: env.frontendUrl,

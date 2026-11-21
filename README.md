@@ -1,6 +1,6 @@
 # Portfolio Backend API
 
-A clean, scalable backend server for [Manik's Portfolio Website](https://github.com/manikkDev/portfolio-web-frontend) — built with **Express.js** and **Supabase (PostgreSQL)**.
+A clean, scalable backend server for [Manik's Portfolio Website](https://github.com/manikkDev/portfolio-web-frontend) — built with **Express.js** and **MongoDB**.
 
 ## 🏗️ Architecture
 
@@ -8,7 +8,7 @@ This backend follows a **clean layered architecture** pattern:
 
 ```
 src/
-├── config/         # Environment, Supabase client, constants
+├── config/         # Environment, MongoDB client, constants
 ├── controllers/    # Request handling & response formatting
 ├── middlewares/    # Validation, rate limiting, error handling
 ├── routes/         # HTTP verb mapping & URL paths
@@ -23,7 +23,7 @@ src/
 | **Controllers** | Parse requests, format responses, set HTTP status |
 | **Services** | Business logic, data transformation, external APIs |
 | **Middlewares** | Validation, rate limiting, CORS, error handling |
-| **Config** | Environment variables, Supabase clients, app constants |
+| **Config** | Environment variables, MongoDB client, app constants |
 | **Utils** | Validators, custom error class, structured logger |
 
 ## 🚀 Quick Start
@@ -31,7 +31,7 @@ src/
 ### Prerequisites
 - **Node.js** 18+
 - **npm** 9+
-- A [Supabase](https://supabase.com) project
+- A MongoDB database (a free [MongoDB Atlas](https://www.mongodb.com/atlas) cluster is enough)
 
 ### 1. Clone & Install
 
@@ -47,20 +47,27 @@ npm install
 cp .env.example .env
 ```
 
-Edit `.env` with your Supabase credentials:
+Edit `.env` with your own values:
 
 ```env
 PORT=3001
 NODE_ENV=development
 FRONTEND_URL=http://localhost:5173
 
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/
 
 YOUTUBE_API_KEY=your-youtube-api-key
 YOUTUBE_CHANNEL_ID=your-channel-id
+
+# Optional: email each contact message through https://resend.com
+RESEND_API_KEY=
+CONTACT_TO_EMAIL=
 ```
+
+`MONGODB_URI` is required: the server will not start without it. The database is
+named `portfolio` (set in `src/config/db.js`) and its collections are created on
+first use. When hosting on Atlas, allow your host's IP addresses under Network Access.
+The same variables must be set on whatever service hosts this API.
 
 ### 3. Run
 
@@ -70,6 +77,9 @@ npm run dev
 
 # Production
 npm start
+
+# Tests
+npm test
 ```
 
 The API server starts at **http://localhost:3001**.
@@ -83,8 +93,8 @@ The API server starts at **http://localhost:3001**.
 | `GET` | `/api/ratings` | Get ratings (paginated) | 100/min |
 | `GET` | `/api/ratings/stats` | Get aggregate rating stats | 100/min |
 | `POST` | `/api/ratings` | Submit a rating | 3/10min |
-| `GET` | `/api/youtube/videos` | Get YouTube videos (cached) | 100/min |
-| `GET` | `/api/linkedin/posts` | Get LinkedIn posts | 100/min |
+| `GET` | `/api/youtube/videos` | Latest long videos and Shorts, as `{ videos, shorts }` (cached for an hour) | 100/min |
+| `GET` | `/api/linkedin/posts` | Hackathon wins, each backed by a LinkedIn post | 100/min |
 
 ### Response Format
 
@@ -111,40 +121,30 @@ Error responses:
 }
 ```
 
-## 🗄️ Database Schema
+## 🗄️ Database
 
-### `contacts`
-Stores contact form submissions.
+MongoDB database `portfolio`. Collections:
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | uuid | Primary key |
-| `name` | text | Sender's name |
-| `email` | text | Sender's email |
-| `subject` | text | Optional subject |
-| `message` | text | Message body |
-| `created_at` | timestamptz | Submission time |
+| Collection | Holds |
+|------------|-------|
+| `contacts` | Contact form messages: `name`, `email`, `subject`, `message`, `created_at` |
+| `ratings` | Website ratings: `name`, `rating` (1 to 5), `comment`, `created_at` |
+| `cache` | One document, `_id: "youtube"`: the latest videos and Shorts, refreshed hourly |
+| `linkedin_posts` | One document per win: the post's link plus `title`, `tag`, `org`, `summary`, `facts` |
 
-### `ratings`
-Stores website ratings and comments.
+### Adding a hackathon win
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | uuid | Primary key |
-| `name` | text | Reviewer's name |
-| `rating` | integer | 1–5 stars |
-| `comment` | text | Optional comment |
-| `created_at` | timestamptz | Submission time |
+LinkedIn does not let an app list a person's posts, so wins are added by link. The
+server then re-reads each public post page once a day.
 
-### `youtube_cache`
-Caches YouTube video data (auto-refreshed hourly).
+```bash
+npm run add-post -- "<linkedin post link>" --title "Event name" --tag "1st Place"   --org "Organiser" --summary "What was built" --facts "Team of 4, 24 hours"
 
-### `linkedin_posts`
-Stores LinkedIn posts (manually managed via Supabase dashboard).
+npm run add-post -- "<linkedin post link>" --remove
+```
 
 ## 🔒 Security
 
-- **Row Level Security (RLS)** enabled on all Supabase tables
 - **Rate limiting** on submission endpoints (contact, ratings)
 - **Input validation** on all POST endpoints
 - **CORS** restricted to frontend origin
@@ -155,7 +155,7 @@ Stores LinkedIn posts (manually managed via Supabase dashboard).
 
 - **Runtime:** Node.js 18+
 - **Framework:** Express.js 5
-- **Database:** Supabase (PostgreSQL)
+- **Database:** MongoDB (official `mongodb` driver)
 - **Rate Limiting:** express-rate-limit
 - **Architecture:** Clean layered (MVC-inspired)
 
@@ -166,8 +166,8 @@ portfolio-web-backend/
 ├── src/
 │   ├── config/
 │   │   ├── constants.js        # Pagination limits, cache TTL
-│   │   ├── env.js              # Env validation & export
-│   │   └── supabase.js         # Supabase client setup
+│   │   ├── db.js               # MongoDB client
+│   │   └── env.js              # Env validation & export
 │   ├── controllers/
 │   │   ├── contact.controller.js
 │   │   ├── linkedin.controller.js
@@ -190,9 +190,15 @@ portfolio-web-backend/
 │   │   └── youtube.service.js
 │   ├── utils/
 │   │   ├── ApiError.js         # Custom error class
+│   │   ├── linkedin.js         # Reads a public LinkedIn post page
 │   │   ├── logger.js           # Structured logger
+│   │   ├── ratingStats.js      # Average and star counts
 │   │   └── validators.js       # Input validators
 │   └── server.js               # Entry point
+├── scripts/
+│   └── add-post.js             # Add or remove a hackathon win
+├── test/
+│   └── api.test.js
 ├── .env.example
 ├── .gitignore
 ├── package.json

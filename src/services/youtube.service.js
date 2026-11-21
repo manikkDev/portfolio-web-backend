@@ -1,12 +1,26 @@
 import { YOUTUBE } from '../config/constants.js';
 import env from '../config/env.js';
-import { supabaseAdmin } from '../config/supabase.js';
+import { db } from '../config/db.js';
 import logger from '../utils/logger.js';
 
 const YT_API_BASE = 'https://www.googleapis.com/youtube/v3';
+const cache = db.collection('cache');
+
+// YouTube keeps two automatic playlists per channel: swap the channel id's "UC"
+// prefix for "UULF" to get long videos only, or "UUSH" to get Shorts only.
+const LISTS = { videos: 'UULF', shorts: 'UUSH' };
+
+async function yt(path, params) {
+  const url = new URL(`${YT_API_BASE}/${path}`);
+  url.search = new URLSearchParams({ key: env.youtube.apiKey, ...params }).toString();
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`YouTube ${path} ${res.status}: ${await res.text()}`);
+  return res.json();
+}
 
 /**
- * Fetch latest videos from YouTube Data API v3 and cache in Supabase.
+ * Latest long videos and latest Shorts, each newest first, with view counts.
+ * Costs 3 API quota units per refresh.
  */
 async function fetchFromYouTube() {
   const { apiKey, channelId } = env.youtube;
@@ -16,84 +30,67 @@ async function fetchFromYouTube() {
     return null;
   }
 
-  const url = new URL(`${YT_API_BASE}/search`);
-  url.searchParams.set('key', apiKey);
-  url.searchParams.set('channelId', channelId);
-  url.searchParams.set('part', 'snippet');
-  url.searchParams.set('order', 'date');
-  url.searchParams.set('type', 'video');
-  url.searchParams.set('maxResults', String(YOUTUBE.MAX_RESULTS));
+  const lists = await Promise.all(
+    Object.values(LISTS).map((prefix) =>
+      yt('playlistItems', {
+        part: 'contentDetails',
+        playlistId: prefix + channelId.slice(2),
+        maxResults: String(YOUTUBE.MAX_RESULTS),
+      }).catch((err) => {
+        // A channel with no Shorts (or no long videos) has no such playlist.
+        logger.warn(err.message);
+        return { items: [] };
+      }),
+    ),
+  );
 
-  const res = await fetch(url.toString());
+  const ids = lists.flatMap((l) => (l.items || []).map((i) => i.contentDetails.videoId));
+  if (ids.length === 0) return null;
 
-  if (!res.ok) {
-    const errBody = await res.text();
-    logger.error('YouTube API error:', res.status, errBody);
-    return null;
-  }
+  const details = await yt('videos', { part: 'snippet,statistics', id: ids.join(',') });
+  const byId = new Map(details.items.map((v) => [v.id, v]));
 
-  const json = await res.json();
+  const toVideo = (id, isShort) => {
+    const v = byId.get(id);
+    if (!v) return null;
+    const t = v.snippet.thumbnails || {};
+    return {
+      id,
+      title: v.snippet.title,
+      thumbnail: (t.maxres || t.standard || t.high || t.medium)?.url || '',
+      published_at: v.snippet.publishedAt,
+      views: Number(v.statistics?.viewCount) || 0,
+      link: isShort ? `https://www.youtube.com/shorts/${id}` : `https://www.youtube.com/watch?v=${id}`,
+    };
+  };
 
-  const videos = (json.items || []).map((item) => ({
-    id: item.id.videoId,
-    title: item.snippet.title,
-    thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.medium?.url || '',
-    published_at: item.snippet.publishedAt,
-    channel_title: item.snippet.channelTitle,
-    link: `https://www.youtube.com/watch?v=${item.id.videoId}`,
-    tags: item.snippet.tags ? item.snippet.tags.join(', ') : '',
-    fetched_at: new Date().toISOString(),
-  }));
-
-  // Upsert into cache
-  if (videos.length > 0) {
-    const { error } = await supabaseAdmin
-      .from('youtube_cache')
-      .upsert(videos, { onConflict: 'id' });
-
-    if (error) {
-      logger.error('Failed to cache YouTube videos:', error.message);
-    } else {
-      logger.info(`Cached ${videos.length} YouTube videos`);
-    }
-  }
-
-  return videos;
+  const [videos, shorts] = lists.map((l, i) =>
+    (l.items || []).map((item) => toVideo(item.contentDetails.videoId, i === 1)).filter(Boolean),
+  );
+  return { videos, shorts };
 }
 
 /**
- * Get YouTube videos — serves from cache, refreshes if stale.
+ * Get YouTube videos — serves the cached copy while it is fresh, refreshes it when
+ * stale, and falls back to the stale copy if YouTube cannot be reached.
  */
 export async function getVideos() {
-  // Check cache freshness
-  const { data: cached, error } = await supabaseAdmin
-    .from('youtube_cache')
-    .select('*')
-    .order('published_at', { ascending: false })
-    .limit(YOUTUBE.MAX_RESULTS);
-
-  if (error) {
-    logger.error('Failed to read YouTube cache:', error.message);
+  const cached = await cache.findOne({ _id: 'youtube' });
+  if (cached && Date.now() - cached.fetched_at < YOUTUBE.CACHE_TTL_MS) {
+    logger.debug('Serving YouTube videos from cache');
+    return cached.data;
   }
 
-  // If cache exists and is fresh, return it
-  if (cached && cached.length > 0) {
-    const newestFetch = new Date(cached[0].fetched_at).getTime();
-    const isStale = Date.now() - newestFetch > YOUTUBE.CACHE_TTL_MS;
-
-    if (!isStale) {
-      logger.debug('Serving YouTube videos from cache');
-      return cached;
+  try {
+    const data = await fetchFromYouTube();
+    if (data) {
+      await cache.replaceOne({ _id: 'youtube' }, { data, fetched_at: Date.now() }, { upsert: true });
+      logger.info(`Cached ${data.videos.length} videos and ${data.shorts.length} Shorts`);
+      return data;
     }
+  } catch (err) {
+    logger.error('YouTube refresh failed:', err.message);
   }
 
-  // Cache is stale or empty — try to refresh
-  const fresh = await fetchFromYouTube();
-
-  if (fresh && fresh.length > 0) {
-    return fresh;
-  }
-
-  // Fallback to whatever is in cache
-  return cached || [];
+  return cached?.data ?? { videos: [], shorts: [] };
 }

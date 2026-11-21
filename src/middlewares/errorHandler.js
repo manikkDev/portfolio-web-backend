@@ -7,16 +7,19 @@ import env from '../config/env.js';
  */
 export function errorHandler(err, _req, res, _next) {
   const statusCode = err.statusCode || 500;
-  const message = err.message || 'Internal Server Error';
+  const isDev = env.nodeEnv === 'development';
 
-  logger.error(`[${statusCode}] ${message}`, err.details || '');
+  logger.error(`[${statusCode}] ${err.message}`, err.details || '');
+
+  // Server-side failures can carry database or host details; only show them in development.
+  const message = statusCode >= 500 && !isDev ? 'Internal Server Error' : err.message || 'Internal Server Error';
 
   res.status(statusCode).json({
     success: false,
     error: {
       message,
       ...(err.details && { details: err.details }),
-      ...(env.nodeEnv === 'development' && { stack: err.stack }),
+      ...(isDev && { stack: err.stack }),
     },
   });
 }

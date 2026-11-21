@@ -6,7 +6,7 @@ import { ApiError } from '../utils/ApiError.js';
  */
 export function validate(validatorFn) {
   return (req, _res, next) => {
-    const { valid, errors } = validatorFn(req.body);
+    const { valid, errors } = validatorFn(req.body ?? {});
     if (!valid) {
       return next(ApiError.badRequest('Validation failed', errors));
     }

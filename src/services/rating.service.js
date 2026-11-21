@@ -1,67 +1,52 @@
-import { supabase } from '../config/supabase.js';
+import { db } from '../config/db.js';
 import { PAGINATION } from '../config/constants.js';
+import { summarizeRatings } from '../utils/ratingStats.js';
 import logger from '../utils/logger.js';
+
+const ratings = db.collection('ratings');
+
+const toApi = ({ _id, ...rest }) => ({ id: _id.toString(), ...rest });
 
 /**
  * Create a new rating.
  */
 export async function createRating({ name, rating, comment }) {
-  const { data, error } = await supabase
-    .from('ratings')
-    .insert({
-      name: name ? name.trim() : 'Anonymous',
-      rating,
-      comment: comment ? comment.trim() : null,
-    })
-    .select('id, name, rating, comment, created_at')
-    .single();
+  const doc = {
+    name: name?.trim() || 'Anonymous',
+    rating,
+    comment: comment?.trim() || null,
+    created_at: new Date(),
+  };
 
-  if (error) {
-    logger.error('Failed to insert rating:', error.message);
-    throw new Error('Failed to save rating');
-  }
-
-  logger.info(`New rating: ${rating}/5 from "${data.name}"`);
-  return data;
+  await ratings.insertOne(doc); // adds _id to doc
+  logger.info(`New rating: ${rating}/5 from "${doc.name}"`);
+  return toApi(doc);
 }
 
 /**
  * Get all ratings, sorted by newest first, with pagination.
  */
 export async function getRatings(page = PAGINATION.DEFAULT_PAGE, limit = PAGINATION.DEFAULT_LIMIT) {
-  const safeLimit = Math.min(limit, PAGINATION.MAX_LIMIT);
-  const from = (page - 1) * safeLimit;
-  const to = from + safeLimit - 1;
+  const safePage = Math.max(1, page);
+  const safeLimit = Math.min(Math.max(1, limit), PAGINATION.MAX_LIMIT);
 
-  // Get count
-  const { count, error: countError } = await supabase
-    .from('ratings')
-    .select('*', { count: 'exact', head: true });
-
-  if (countError) {
-    logger.error('Failed to count ratings:', countError.message);
-    throw new Error('Failed to fetch ratings');
-  }
-
-  // Get data
-  const { data, error } = await supabase
-    .from('ratings')
-    .select('id, name, rating, comment, created_at')
-    .order('created_at', { ascending: false })
-    .range(from, to);
-
-  if (error) {
-    logger.error('Failed to fetch ratings:', error.message);
-    throw new Error('Failed to fetch ratings');
-  }
+  const [total, docs] = await Promise.all([
+    ratings.countDocuments(),
+    ratings
+      .find()
+      .sort({ created_at: -1 })
+      .skip((safePage - 1) * safeLimit)
+      .limit(safeLimit)
+      .toArray(),
+  ]);
 
   return {
-    ratings: data,
+    ratings: docs.map(toApi),
     pagination: {
-      page,
+      page: safePage,
       limit: safeLimit,
-      total: count,
-      totalPages: Math.ceil(count / safeLimit),
+      total,
+      totalPages: Math.ceil(total / safeLimit),
     },
   };
 }
@@ -70,30 +55,6 @@ export async function getRatings(page = PAGINATION.DEFAULT_PAGE, limit = PAGINAT
  * Get aggregate stats for ratings.
  */
 export async function getRatingStats() {
-  const { data, error } = await supabase
-    .from('ratings')
-    .select('rating');
-
-  if (error) {
-    logger.error('Failed to fetch rating stats:', error.message);
-    throw new Error('Failed to fetch rating stats');
-  }
-
-  if (!data || data.length === 0) {
-    return { average: 0, total: 0, distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } };
-  }
-
-  const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  let sum = 0;
-
-  for (const row of data) {
-    sum += row.rating;
-    distribution[row.rating] = (distribution[row.rating] || 0) + 1;
-  }
-
-  return {
-    average: parseFloat((sum / data.length).toFixed(1)),
-    total: data.length,
-    distribution,
-  };
+  const rows = await ratings.aggregate([{ $group: { _id: '$rating', n: { $sum: 1 } } }]).toArray();
+  return summarizeRatings(rows);
 }
