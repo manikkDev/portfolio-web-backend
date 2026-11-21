@@ -2,6 +2,7 @@ import { YOUTUBE } from '../config/constants.js';
 import env from '../config/env.js';
 import { db } from '../config/db.js';
 import logger from '../utils/logger.js';
+import { channelStats } from '../utils/youtube.js';
 
 const YT_API_BASE = 'https://www.googleapis.com/youtube/v3';
 const cache = db.collection('cache');
@@ -19,8 +20,8 @@ async function yt(path, params) {
 }
 
 /**
- * Latest long videos and latest Shorts, each newest first, with view counts.
- * Costs 3 API quota units per refresh.
+ * Latest long videos and latest Shorts, each newest first, with view counts, plus the
+ * channel's subscriber, video and view totals. Costs 4 API quota units per refresh.
  */
 async function fetchFromYouTube() {
   const { apiKey, channelId } = env.youtube;
@@ -29,6 +30,11 @@ async function fetchFromYouTube() {
     logger.warn('YouTube API key or Channel ID not configured — using cached data only');
     return null;
   }
+
+  const channelRequest = yt('channels', { part: 'statistics', id: channelId }).catch((err) => {
+    logger.warn(err.message);
+    return { items: [] };
+  });
 
   const lists = await Promise.all(
     Object.values(LISTS).map((prefix) =>
@@ -67,7 +73,8 @@ async function fetchFromYouTube() {
   const [videos, shorts] = lists.map((l, i) =>
     (l.items || []).map((item) => toVideo(item.contentDetails.videoId, i === 1)).filter(Boolean),
   );
-  return { videos, shorts };
+  const channel = channelStats((await channelRequest).items?.[0]);
+  return { videos, shorts, channel };
 }
 
 /**
@@ -92,5 +99,5 @@ export async function getVideos() {
     logger.error('YouTube refresh failed:', err.message);
   }
 
-  return cached?.data ?? { videos: [], shorts: [] };
+  return cached?.data ?? { videos: [], shorts: [], channel: null };
 }

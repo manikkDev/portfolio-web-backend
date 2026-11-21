@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { summarizeRatings } from '../src/utils/ratingStats.js';
 import { validateContact, validateRating } from '../src/utils/validators.js';
 import { excerptFrom, parseLinkedInPost, titleFrom } from '../src/utils/linkedin.js';
+import { channelStats } from '../src/utils/youtube.js';
 
 test('summarizeRatings: empty', () => {
   assert.deepEqual(summarizeRatings([]), {
@@ -68,4 +69,14 @@ test('titleFrom and excerptFrom', () => {
   assert.ok(titleFrom('word '.repeat(40)).length <= 70);
   assert.equal(excerptFrom('a\n\n b   c'), 'a b c');
   assert.ok(excerptFrom('x'.repeat(400)).endsWith('…'));
+});
+
+test('channelStats reads the totals and respects a hidden subscriber count', () => {
+  assert.deepEqual(channelStats({ statistics: { subscriberCount: '103000', videoCount: '412', viewCount: '25000000' } }), {
+    subscribers: 103000,
+    videos: 412,
+    views: 25000000,
+  });
+  assert.equal(channelStats({ statistics: { hiddenSubscriberCount: true, videoCount: '1', viewCount: '2' } }).subscribers, null);
+  assert.equal(channelStats(undefined), null);
 });
